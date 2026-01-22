@@ -1,85 +1,85 @@
 // stores/auth.ts
-import { defineStore } from 'pinia'
+import { defineStore } from 'pinia';
 
-export interface User {
-  id: number
-  email: string
-  name: string
-}
+export const useAuthStore = defineStore('auth', {
+  state: () => ({
+    token: useCookie('auth_token').value || null,
+    user: null,
+    error: null as string | null, // Nuevo estado para errores
+  }),
 
-export interface AuthState {
-  user: User | null
-  token: string | null
-  isAuthenticated: boolean
-}
+  getters: {
+    isAuthenticated: (state) => !!state.token,
+  },
 
-export const useAuthStore = defineStore('auth', () => {
-  // State
-  const user = ref<User | null>(null)
-  const token = ref<string | null>(null)
-  const isAuthenticated = computed(() => !!token.value)
-  // API client
-  const apiClient = useApiClient()
-  const tokenCookie = useCookie('auth_token', { maxAge: 60 * 60 * 24 * 7 }) // 1 semana
-  // Actions
-  async function register(email: string, password: string, name: string) {
-    try {
-      const { data, error } = await apiClient.post<User>('/auth/register', {
-        email,
-        password,
-        name
-      })
-      if (error.value) {
-        throw createError({
-          message: error.value.message || 'Error al registrar usuario',
-          statusCode: error.value.statusCode || 500
-        })
+  actions: {
+    async fetchUser() {
+      if (!this.token) return;
+      const config = useRuntimeConfig();
+
+      try {
+        const userData = await $fetch(`${config.public.apiBaseUrl}/auth/profile`, {
+          headers: { Authorization: `Bearer ${this.token}` }
+        });
+        this.user = userData;
+      } catch (error) {
+        console.error('Error fetching user:', error);
+        // Si el token no sirve, cerramos sesión
+        this.logout();
       }
-      return data.value
-    } catch (err) {
-      throw err
+    },
+
+
+    // Resetear error antes de nuevas acciones
+    clearError() {
+      this.error = null;
+    },
+
+    async login(email: string, password: string) {
+      this.clearError();
+      const config = useRuntimeConfig();
+
+      try {
+        const data: any = await $fetch(`${config.public.apiBaseUrl}/auth/login`, {
+          method: 'POST',
+          body: { email, password },
+        });
+
+        this.token = data.access_token;
+        const cookie = useCookie('auth_token');
+        cookie.value = data.access_token;
+        await this.fetchUser();
+        return true;
+      } catch (err: any) {
+        // Capturar mensaje del backend o poner uno genérico
+        this.error = err.data?.message || 'Credenciales incorrectas o error de servidor.';
+        return false;
+      }
+    },
+
+    async register(name: string, email: string, password: string) {
+      this.clearError();
+      const config = useRuntimeConfig();
+
+      try {
+        await $fetch(`${config.public.apiBaseUrl}/auth/register`, {
+          method: 'POST',
+          body: { name, email, password },
+        });
+        return true;
+      } catch (err: any) {
+        this.error = err.data?.message || 'Error al registrar usuario.';
+        return false;
+      }
+    },
+
+    logout() {
+      this.token = null;
+      this.user = null;
+      this.error = null;
+      const cookie = useCookie('auth_token');
+      cookie.value = null;
+      navigateTo('/login');
     }
   }
-  async function login(email: string, password: string) {
-    try {
-      const { data, error } = await apiClient.post<{ access_token: string, user: User }>('/auth/login', {
-        email,
-        password
-      })
-      if (error.value) {
-        throw createError({
-          message: error.value.message || 'Credenciales inválidas',
-          statusCode: error.value.statusCode || 401
-        })
-      }
-      if (data.value) {
-        user.value = data.value.user
-        token.value = data.value.access_token
-        tokenCookie.value = data.value.access_token
-      }
-      return data.value
-    } catch (err) {
-      throw err
-    }
-  }
-  function logout() {
-    user.value = null
-    token.value = null
-    tokenCookie.value = null
-  }
-  // Init method to restore state from cookies
-  function init() {
-    if (tokenCookie.value) {
-      token.value = tokenCookie.value
-    }
-  }
-  return {
-    user,
-    token,
-    isAuthenticated,
-    register,
-    login,
-    logout,
-    init
-  }
-})
+});

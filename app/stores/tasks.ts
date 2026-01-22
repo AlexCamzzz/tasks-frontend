@@ -1,177 +1,102 @@
 // stores/tasks.ts
-import { defineStore } from 'pinia'
+import { defineStore } from 'pinia';
+import { useAuthStore } from './auth';
 
-export interface Task {
-  id: number
-  title: string
-  description?: string
-  completed: boolean
-  dueDate?: string
-  category?: string
-  userId: number
-  createdAt: string
-}
+export const useTasksStore = defineStore('tasks', {
+  state: () => ({
+    tasks: [] as any[],
+    loading: false,
+  }),
 
-export interface TaskFilters {
-  completed?: boolean
-  category?: string
-  search?: string
-}
+  actions: {
+    async fetchSecure(path: string, options: any = {}) {
+      const config = useRuntimeConfig();
+      const authStore = useAuthStore();
 
-export const useTasksStore = defineStore('tasks', () => {
-  // State
-  const tasks = ref<Task[]>([])
-  const isLoading = ref(false)
-  const error = ref<string | null>(null)
-  
-  // API client
-  const apiClient = useApiClient()
-  
-  // Getters
-  const completedTasks = computed(() => tasks.value.filter(task => task.completed))
-  const pendingTasks = computed(() => tasks.value.filter(task => !task.completed))
-  const getTasksByCategory = (category: string) => {
-    return computed(() => tasks.value.filter(task => task.category === category))
-  }
-  
-  // Actions
-  async function fetchTasks(filters: TaskFilters = {}) {
-    isLoading.value = true
-    error.value = null
-    
-    try {
-      const { data, error: apiError } = await apiClient.get<Task[]>('/tasks', filters)
-      
-      if (apiError.value) {
-        throw createError({
-          message: apiError.value.message || 'Error al cargar tareas',
-          statusCode: apiError.value.statusCode || 500
-        })
+      const headers = { ...options.headers };
+      if (authStore.token) {
+        headers['Authorization'] = `Bearer ${authStore.token}`;
       }
-      
-      tasks.value = data.value || []
-    } catch (err: any) {
-      error.value = err.message
-    } finally {
-      isLoading.value = false
+
+      // Usamos el cliente nativo de Nuxt ($fetch) en lugar de Axios
+      // para mejor integración, pero cumple la función de Cliente HTTP solicitada.
+      return $fetch(`${config.public.apiBaseUrl}${path}`, {
+        ...options,
+        headers,
+      });
+    },
+
+    // AHORA: Acepta filtros opcionales [cite: 439-443]
+    async loadTasks(filters: any = {}) {
+      this.loading = true;
+      try {
+        // Convertimos el objeto de filtros a query params URL
+        // Ejemplo: ?search=comprar&status=PENDING
+        const params = new URLSearchParams();
+        if (filters.search) params.append('search', filters.search);
+        if (filters.status) params.append('status', filters.status);
+        if (filters.category) params.append('category', filters.category);
+
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+
+        // [cite: 434] GET /tasks con filtros
+        this.tasks = await this.fetchSecure(`/tasks${queryString}`);
+      } catch (error) {
+        console.error('Error cargando tareas:', error);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async createTask(task: any) {
+      try {
+        await this.fetchSecure('/tasks', {
+          method: 'POST',
+          body: task
+        });
+        await this.loadTasks();
+      } catch (error) {
+        console.error('Error creando tarea:', error);
+        throw error; // Re-lanzar para manejar en la UI
+      }
+    },
+
+    // NUEVO: Editar Tarea
+    async updateTask(id: number, task: any) {
+      try {
+        await this.fetchSecure(`/tasks/${id}`, {
+          method: 'PUT',
+          body: task // UpdateTaskDto
+        });
+        await this.loadTasks();
+      } catch (error) {
+        console.error('Error actualizando tarea:', error);
+        throw error;
+      }
+    },
+
+    async toggleComplete(id: number) {
+      try {
+        // [cite: 438] PATCH /tasks/:id/complete
+        await this.fetchSecure(`/tasks/${id}/complete`, {
+          method: 'PATCH'
+        });
+        // Recargar para actualizar filtros si estamos viendo solo "Pendientes"
+        await this.loadTasks();
+      } catch (error) {
+        console.error('Error completando tarea:', error);
+      }
+    },
+
+    async removeTask(id: number) {
+      try {
+        await this.fetchSecure(`/tasks/${id}`, {
+          method: 'DELETE'
+        });
+        this.tasks = this.tasks.filter(t => t.id !== id);
+      } catch (error) {
+        console.error('Error eliminando tarea:', error);
+      }
     }
   }
-  
-  async function createTask(taskData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'completed'>) {
-    isLoading.value = true
-    error.value = null
-    
-    try {
-      const { data, error: apiError } = await apiClient.post<Task>('/tasks', taskData)
-      
-      if (apiError.value) {
-        throw createError({
-          message: apiError.value.message || 'Error al crear tarea',
-          statusCode: apiError.value.statusCode || 500
-        })
-      }
-      
-      if (data.value) {
-        tasks.value.push(data.value)
-      }
-      
-      return data.value
-    } catch (err: any) {
-      error.value = err.message
-      throw err
-    } finally {
-      isLoading.value = false
-    }
-  }
-  
-  async function updateTask(id: number, taskData: Partial<Task>) {
-    isLoading.value = true
-    error.value = null
-    
-    try {
-      const { data, error: apiError } = await apiClient.put<Task>(`/tasks/${id}`, taskData)
-      
-      if (apiError.value) {
-        throw createError({
-          message: apiError.value.message || 'Error al actualizar tarea',
-          statusCode: apiError.value.statusCode || 500
-        })
-      }
-      
-      if (data.value) {
-        const index = tasks.value.findIndex(t => t.id === id)
-        if (index !== -1) {
-          tasks.value[index] = data.value
-        }
-      }
-      
-      return data.value
-    } catch (err: any) {
-      error.value = err.message
-      throw err
-    } finally {
-      isLoading.value = false
-    }
-  }
-  
-  async function completeTask(id: number) {
-    error.value = null
-    
-    try {
-      const { data, error: apiError } = await apiClient.patch<Task>(`/tasks/${id}/complete`)
-      
-      if (apiError.value) {
-        throw createError({
-          message: apiError.value.message || 'Error al completar tarea',
-          statusCode: apiError.value.statusCode || 500
-        })
-      }
-      
-      if (data.value) {
-        const index = tasks.value.findIndex(t => t.id === id)
-        if (index !== -1) {
-          tasks.value[index].completed = true
-        }
-      }
-      
-      return data.value
-    } catch (err: any) {
-      error.value = err.message
-      throw err
-    }
-  }
-  
-  async function deleteTask(id: number) {
-    error.value = null
-    
-    try {
-      const { error: apiError } = await apiClient.delete<void>(`/tasks/${id}`)
-      
-      if (apiError.value) {
-        throw createError({
-          message: apiError.value.message || 'Error al eliminar tarea',
-          statusCode: apiError.value.statusCode || 500
-        })
-      }
-      
-      tasks.value = tasks.value.filter(t => t.id !== id)
-    } catch (err: any) {
-      error.value = err.message
-      throw err
-    }
-  }
-  
-  return {
-    tasks,
-    isLoading,
-    error,
-    completedTasks,
-    pendingTasks,
-    getTasksByCategory,
-    fetchTasks,
-    createTask,
-    updateTask,
-    completeTask,
-    deleteTask
-  }
-})
+});
